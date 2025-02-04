@@ -1,21 +1,35 @@
 import React, { useState, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import TennisCourtList from "../TennisCourtList";
 import "leaflet/dist/leaflet.css";
-import L from "leaflet";
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconUrl: markerIcon.src,
-  iconRetinaUrl: markerIcon2x.src,
-  shadowUrl: markerShadow.src,
-});
+interface QueueItem {
+  joinTime: string;
+  phoneNumber: string;
+  playerId: string;
+}
+
+interface Court {
+  courtId: string;
+  queue: QueueItem[];
+  startTime: string;
+}
+
+interface CourtLocation {
+  locationId: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  courts: Court[];
+}
 
 // Haversine Formula for Distance Calculation
-const getDistance = (lat1, lon1, lat2, lon2) => {
+const getDistance = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number => {
   const R = 6371; // Radius of Earth in km
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -29,44 +43,89 @@ const getDistance = (lat1, lon1, lat2, lon2) => {
   return R * c; // Distance in km
 };
 
-const MapWithQueue = () => {
-  const [courts, setCourts] = useState([]);
-  const [filteredCourts, setFilteredCourts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [location, setLocation] = useState("");
-  const [radius, setRadius] = useState(5);
-  const [userCoords, setUserCoords] = useState({ lat: null, lon: null });
+const MapWithQueue: React.FC = () => {
+  const [leaflet, setLeaflet] = useState<typeof import("leaflet") | null>(null);
+  const [reactLeaflet, setReactLeaflet] = useState<
+    typeof import("react-leaflet") | null
+  >(null);
+  const [courtLocations, setCourtLocations] = useState<CourtLocation[]>([]);
+  const [filteredCourtLocations, setFilteredCourtLocations] = useState<
+    CourtLocation[]
+  >([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [location, setLocation] = useState<string>("");
+  const [radius, setRadius] = useState<number>(5);
 
   useEffect(() => {
-    async function fetchCourts() {
+    // Only run in the browser
+    if (typeof window !== "undefined") {
+      // Dynamically import everything related to Leaflet/React-Leaflet
+      Promise.all([import("leaflet"), import("react-leaflet")])
+        .then(([L, RL]) => {
+          setLeaflet(L);
+          setReactLeaflet(RL);
+        })
+        .catch((error) => {
+          console.error("Error loading leaflet/react-leaflet", error);
+        });
+    }
+    async function fetchCourtLocations() {
       try {
         const response = await fetch(
           "https://a4wihgjg24.execute-api.us-west-1.amazonaws.com/courts"
         );
         const rawData = await response.json();
 
-        const cleanedData = rawData.map((court) => ({
-          locationId: court.locationId.S,
-          name: court.name.S,
-          latitude: parseFloat(court.latitude.N),
-          longitude: parseFloat(court.longitude.N),
-          address: court.address?.S || "No address available",
-          courts: court.courts?.L || [],
-        }));
+        // Transform DynamoDB format
+        const cleanedData: CourtLocation[] = rawData.map(
+          (location: {
+            locationId: { S: string };
+            name: { S: string };
+            address?: { S: string };
+            latitude: { N: string };
+            longitude: { N: string };
+            courts?: { L: { M: { courtId: { S: string } } }[] };
+          }) => ({
+            locationId: location.locationId.S,
+            name: location.name.S,
+            address: location.address?.S || "No address available",
+            latitude: parseFloat(location.latitude.N),
+            longitude: parseFloat(location.longitude.N),
+            courts:
+              location.courts?.L.map((court) => ({
+                courtId: court.M.courtId.S,
+              })) || [],
+          })
+        );
 
-        setCourts(cleanedData);
-        setFilteredCourts(cleanedData);
+        setCourtLocations(cleanedData);
+        setFilteredCourtLocations(cleanedData);
       } catch (error) {
-        console.error("Failed to fetch courts:", error);
+        console.error("Failed to fetch court locations:", error);
       } finally {
         setLoading(false);
       }
     }
 
-    fetchCourts();
+    fetchCourtLocations();
   }, []);
 
-  const fetchCoordinates = async (address) => {
+  if (!leaflet || !reactLeaflet) {
+    return <div>Loading map...</div>;
+  }
+
+  // Now you can safely destructure from reactLeaflet
+  const { MapContainer, TileLayer, Marker, Popup } = reactLeaflet;
+
+  const L = leaflet;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: "/marker-icon-2x.png",
+    iconUrl: "/marker-icon.png",
+    shadowUrl: "/marker-shadow.png",
+  });
+
+  // Fetch lat/lon for a given address using Google Maps API
+  const fetchCoordinates = async (address: string) => {
     try {
       const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
       const response = await fetch(
@@ -77,7 +136,6 @@ const MapWithQueue = () => {
       const data = await response.json();
       if (data.results.length > 0) {
         const { lat, lng } = data.results[0].geometry.location;
-        setUserCoords({ lat, lon: lng });
         filterByDistance(lat, lng);
       } else {
         alert("Location not found. Try another name.");
@@ -87,18 +145,19 @@ const MapWithQueue = () => {
     }
   };
 
-  const filterByDistance = (lat, lon) => {
-    const filtered = courts.filter((court) => {
+  // Filter courts by distance from user
+  const filterByDistance = (lat: number, lon: number) => {
+    const filtered = courtLocations.filter((court) => {
       const distance = getDistance(lat, lon, court.latitude, court.longitude);
       return distance <= radius;
     });
-    setFilteredCourts(filtered);
+    setFilteredCourtLocations(filtered);
   };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 h-screen">
       {/* Left Side - Search Box & Court List */}
-      <div className="overflow-y-auto p-4 bg-white">
+      <div className="overflow-y-auto p-2 bg-white">
         {/* Search Bar */}
         <input
           type="text"
@@ -128,7 +187,11 @@ const MapWithQueue = () => {
         </select>
 
         {/* Courts List */}
-        <TennisCourtList courts={filteredCourts} />
+        {loading ? (
+          <p className="text-center text-gray-500">Loading courts...</p>
+        ) : (
+          <TennisCourtList courtLocations={filteredCourtLocations} />
+        )}
       </div>
 
       {/* Right Side - Map */}
@@ -140,7 +203,7 @@ const MapWithQueue = () => {
           className="absolute inset-0 h-full w-full"
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          {filteredCourts.map((court) => (
+          {filteredCourtLocations.map((court) => (
             <Marker
               key={court.locationId}
               position={[court.latitude, court.longitude]}
@@ -148,7 +211,7 @@ const MapWithQueue = () => {
               <Popup>
                 <strong>{court.name}</strong>
                 <p>{court.address}</p>
-                <p>Wait Time: {30} mins</p>
+                <p>{court.courts.length} courts available</p>
               </Popup>
             </Marker>
           ))}

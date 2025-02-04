@@ -1,21 +1,31 @@
-import React from "react";
 import TennisCourtCard from "./TennisCourtCard";
 
-const TennisCourtList = ({
-  courts,
-  onJoinQueue,
-}: {
-  courts: any[];
-  onJoinQueue: (id: number) => void;
+interface Court {
+  courtId: string;
+  queue: { joinTime: string; phoneNumber: string; playerId: string }[];
+  startTime: string;
+}
+
+interface CourtLocation {
+  locationId: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  courts: Court[];
+  address: string;
+}
+
+interface TennisCourtListProps {
+  courtLocations: CourtLocation[];
+}
+
+const TennisCourtList: React.FC<TennisCourtListProps> = ({
+  courtLocations,
 }) => {
   return (
     <div className="space-y-4">
-      {courts.map((court) => (
-        <TennisCourtCard
-          key={court.id}
-          court={court}
-          onJoinQueue={onJoinQueue}
-        />
+      {courtLocations.map((location) => (
+        <TennisCourtCard key={location.locationId} location={location} />
       ))}
     </div>
   );
